@@ -3,6 +3,7 @@ using AMDGPU: @roc
 using LinearAlgebra
 using Printf
 using Random
+using Dates
 
 const N_QUBITS::Int = 4 # It gives a 2⁴ = 16 state vector
 const DIM::Int = 2^N_QUBITS
@@ -377,3 +378,118 @@ print_hist(counts, N_QUBITS)
 println("\nCounts for expected outcomes:")
 println("   0000 (k=0): ", get(counts, 0, 0))
 println("   0011 (k=3): ", get(counts, 3, 0))
+
+
+# Byte-size formatting helper
+
+const BYTES_PER_AMPLITUDE = 16 # ComplexF64 = 16 bytes
+
+"""
+    format_bytes(nbytes::Integer) -> String
+
+Returrn a human-readable size (MiB/GiB) with 2 decimals.
+"""
+function format_bytes(nbytes::Int)::String
+    mib = nbytes / 1024^2
+    gib = nbytes / 1024^3
+    if gib >= 1
+        return @sprintf("%.2f GiB", gib)
+    else
+        return @sprintf("%.2f MiB", mib)
+    end
+end
+
+"""
+    benchmark_circuit(n_qubits::Int; n_gates::Int=100, rng=Random.GLOBAL_RNG) -> Float64
+
+Create |0..0⟩, warm up the kernel, then apply 'n_gates' random H n_gates
+to random qubits. Return elapsed time in milliseconds for the gate loop only.
+"""
+function benchmark_circuit(n_qubits::Int; n_gates::Int=100, rng=Random.GLOBAL_RNG)::Float64
+    @assert n_qubits >= 1
+    @assert n_gates >= 1
+
+    # Create state and warm-up one kerrnel to avoid counting JIT time
+    ψ = gpu_zero_state(n_qubits)
+    apply_gate!(ψ, GATE_H, 0, n_qubits) # warm-up
+    AMDGPU.synchronize()
+
+    # Recreate a fresh state (not strictly necessary, but clean)
+    ψ = gpu_zero_state(n_qubits)
+    AMDGPU.synchronize()
+
+    # Time only the gate applications
+    t0 = time_ns()
+    @inbounds for _ in 1:n_gates
+        q = rand(rng, 0:n_qubits-1) # random target qubit (0-based)
+        apply_gate!(ψ, GATE_H, q, n_qubits)
+    end
+    AMDGPU.synchronize()
+    dt_ms = (time_ns() - t0) / 1e6
+    return dt_ms
+end
+
+# Sweep function and result struct
+
+"""
+    BenchRow: struct holding one benchamrk result
+"""
+struct BenchRow
+    n_qubits::Int
+    bytes::Int
+    time_ms::Float64
+    gates_per_sec::Float64
+end
+
+"""
+    run_benchmarks(; n_gates=100, seeds=true) -> Vector{BenchRow}
+
+Runs benchamrk for selected n_qubits values and return results.
+"""
+function run_benchmarks(; n_gates::Int=100, seeds::Bool=true)
+    ns = [10, 15, 20, 22, 24, 25, 26, 27, 28]
+    results = BenchRow[]
+    rng = MersenneTwister(42) # stable runs unless seeds=false
+
+    println("\nRunning benchmarks... (n_gates = $n_gates)")
+    for n in ns
+        bytes = (Int(1) << n) * BYTES_PER_AMPLITUDE
+        if seeds
+            Random.seed!(rng, 42 + n)
+        end
+        dt_ms = benchmark_circuit(n; n_gates=n_gates, rng=rng)
+        gps = n_gates / (dt_ms / 1_000.0) # gates per second
+        push!(results, BenchRow(n, bytes, dt_ms, gps))
+        @printf("n=%2d size=%s time=%.2f ms throughput=%.1f gates/s\n",
+        n, format_bytes(bytes), dt_ms, gps)
+    end
+    return results
+end
+
+# Print a formatted table
+
+"""
+    print_bench_table(rows::Vector{BenchRow})
+
+Pretty-print a table: n_qubits | size | time(ms) | gates/s
+"""
+function print_bench_table(rows::Vector{BenchRow})
+    @printf("%8s %12s %12s %14s\n", "n_qubits", "state size", "time (ms)",
+    "gates / s")
+    println(repeat('-', 8 + 2 + 12 + 2 + 12 + 14))
+
+    for r in rows
+        @printf("%8d %12s %12.2f %14.1f\n", r.n_qubits, format_bytes(r.bytes), r.time_ms,
+        r.gates_per_sec)
+    end
+end
+
+# Execute the benchmarking sweep
+
+const DEFAULT_GATES = 100
+
+bench_rows = run_benchmarks(; n_gates=DEFAULT_GATES)
+print_bench_table(bench_rows)
+
+println("Note: Time roughly doubles per +1 qubit (state size doubles),")
+println("but MI300X parallelism keeps per-gate time competitive up to ~28 qubits")
