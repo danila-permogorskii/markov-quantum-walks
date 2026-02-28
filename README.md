@@ -12,15 +12,6 @@ The code is heavily commented — each file is designed to be read as a tutorial
 
 There is currently no ready-made Julia quantum simulation package with an AMD GPU backend. Existing frameworks like Yao.jl offer CUDA-only GPU support (CuYao.jl), while AMDGPU.jl provides the low-level GPU programming interface but no quantum-specific tooling. This project bridges that gap by building quantum simulation primitives directly on top of AMDGPU.jl with custom ROCm kernels.
 
-## Repository structure
-
-```
-src/
-  01_classical_markov.jl   — Classical random walk on a 1D chain (Markov chain)
-  02_quantum_markov.jl     — Quantum walk: unitary evolution, interference, coin operators
-  03_gpu_quantum_sim.jl    — GPU-accelerated state-vector simulator (MI300X)
-```
-
 ## Current capabilities
 
 - **Classical Markov chains** — transition matrices, stationary distributions, eigenvalue analysis
